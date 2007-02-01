@@ -1,5 +1,5 @@
 function fd, dir, var, m
-  ; We're solving the Sod problem, and need finite differences
+  ; We're solving the Sod problem, and need finite differences, "fd"
   ; Takes a vector 'var' holding values of a variable over the grid
   ; The dir parameter should be 0,1, or -1, to determine difference direction
   ; m should be the index of grid pt around which a difference is needed
@@ -15,9 +15,6 @@ function fd, dir, var, m
     if ((m eq 0) and (dir ne 1)) then diff = 0 else begin
       if ((m eq npts-1) and (dir ne -1)) then diff = 0 else begin
       ;
-      ; standard finite difference
-        if dir eq 0 then diff = (var(m+1)-var(m-1))/2
-      ;
       ; forward finite difference
         if dir eq 1 then diff = var(m+1) - var(m) 
       ;
@@ -27,146 +24,140 @@ function fd, dir, var, m
       endelse
     endelse
     ;
-  return diff
+  return, diff
 end
 
 
 
 
-function visc, dens, vel, i
-  ; von Neumann and Richtmeyr Artificial Viscosity (from our pdf lecture notes)
+function visc, direct, dens, vel, i
   ;
-  ; dens and vel should be vectors of those respective quantities
-  ; i indexes grid point where we want to know the viscosity
-  ; The user should never pass i=0,1,npts-2, nor npts-1
-  ; npts should be the number of gridpoints, xstep the grid step.
-  ;
-  ;
-  qconst=1.5  ; usually 0.05 < q < 2, as said in lecture notes
-  ; I need a lot of damping, based on my solution w/o artificial visc.
-  ; IDL doesn't distinguish between q and Q so had to name carefully.
-  ;
-  ; By definition of Q, we can't calculate Q at the endpts nor at the point
-  ; adjacent to each endpoint, so we'll say no damping at tube edges.
-  ; Won't need it there anyway.
-  ; Then decide on forward or reverse velocity gradients based on sign of v
-  ; That will make this consistent with upwind scheme.
-  ;
-  dvfwd = fd(1,vel,i)		
-  dvrev = fd(-1,vel,i)			; v diffs select piecewise Q
-  dv = fd(0,vel,i)
-  Q = qconst^2*dens(i)*dv^2			; Q at given point i
-  Qr = qconst^2*dens(i+1)*(fd(0,vel,i+1))^2	; Q at i+1
-  Ql = qconst^2*dens(i-1)*(fd(0,vel,i-1))^2	; Q at i-1
-  ;
-  if vel(i) lt 0 then begin
-    if dvfwd lt 0 then dQ = Qr - Q else begin
-      Q = 0
-      dQ = 0
-      ; Well... that's what the pdf lecture notes said...
-    endelse
-  endif else begin	
-    if vel(i) gt 0 then begin
-      if dvrev lt 0 then dQ = Q - Ql else begin		
-	Q = 0
-        dQ = 0
-      endelse
-    endif else begin 	; only v=0 is left
-      if dv lt 0 then dQ = 0.5*(Qr - Ql) else begin
-        Q = 0 
-	dQ = 0		
-      endelse
-    endelse
-  endelse
-  ;
-  ;
-  ; The kill switch.  To neglect artificial viscosity,
-  ; change the following variable to 1.  Now I don't have to
-  ; erase every single call to viscosity value or computation
+  ; To neglect artificial visc., change the following variable to 1.
+  ; Now I don't have to erase every single call to viscosity computation
   ; in the main program to neglect viscosity for testing purposes.
-  ;
-  no_thanks = 0
-  ;
+  no_thanks = 1
   if (no_thanks eq 1) then begin
     Q = 0
+    return, Q
+  endif
+  ;
+  ; von Neumann and Richtmeyr Artificial Viscosity (from our pdf lecture notes)
+  ;
+  ; When viscosity is needed, it always occurs with specified direction of dv.
+  ; Then each call to viscosity should pass the appropriate directional argument.
+  ;
+  ; dens and vel should be vectors of those respective quantities
+  ; i indexes grid point where we want to know the viscosity.
+  ;
+  ; There are points (endpoints and adjacents) where we may not be able to
+  ; compute Q because the velocity difference may not be computable at those points.
+  ; No worries, the call to fd will take care of that, setting the velocity 
+  ; difference 0, and then Q will be zero.  End result, no damping at tube edges.
+  ;
+  ; IDL doesn't distinguish between q and Q so had to name carefully.
+  ;
+  qconst=1.5  ; usually 0.05 < q < 2, as said in lecture notes
+  ;
+  ; Regain the velocity difference that the call to viscosity occured with
+  dvel = fd(direct,vel,i)
+  ;
+  ; Now compute based on definition of Q
+  if dvel lt 0 then Q = qconst^2*dens(i)*dvel^2 else Q = 0
+  ;
+  ;
+  return, Q
+end
+
+
+
+function dvisc, direx, rhou, vee, indx
+  ;
+  ; The no viscosity option again.
+  no_thanks = 1
+  if (no_thanks eq 1) then begin
     dQ = 0
+    return, dQ
   endif
   ;
   ;
-  Qset = [Q, dQ]
-  return Qset
-end
-  
-
-
-
-function st, ps, rh, xes
-  ; computing sackur-tetrode specific entropy
-  ; soln should be the solution matrix with rho, rho*v, rho*e
-  ; the user should pass a set of x and k for wave positions.
+  ; Same logical procedure as the "visc" function but computes a difference
+  ; to match the direction of the velocity gradient occuring with the call to "dvisc"
   ;
-  kb = 1.38e-23
-  plh = 6.626e-34
-  ga = 5/3.d0
-  mh = 1.673e-23
-  mu = 29*mh 		; an average of Z for He and Xe
+  mesh = 200
   ;
-  ; Yeah i know in class we used H_2 and Xe but gamma=5/3 is for
-  ; monatomic gas and H_2 ain't monatomic.  So pick the next 
-  ; lightest thing, He.
+  qconst=1.5  
   ;
-  nizzle=200
-  ste = dblarr(nizzle)
-  for a=0,kcd do ste(a)=5
-  for a=ksh,nizzle-1 do ste(a)=17
-  l = xsh - xcd
-  for b=kcd,ksh do begin	; just trust the fudge factors...
-    ste(b) = 7 + k*1e22/rh(b)/l*( 2.5 + 1.5*alog(ps(b)*l/(g-1)) + alog(l) $
-    + alog( mu^4/rh(b)/l/plh^3*(4*!pi/3/rho(b)/l)^1.5 ) )
-  endfor
+  ; Q is still q^2*dens(k)*dvel(k)^2, but when differencing Q in a certain 
+  ; direction, Qk - Qk-1, Qk+1 - Qk-1, or Qk+1 - Qk, you need the corresponding 
+  ; pair of vel(k +/- 1,0), each vel. differenced in the specified direction. 
+  ; Also, certain direction differences can't be computed near or at endpoints.
   ;
-  return ste
+  if direx eq -1 then begin	; The reverse finite difference
+    if indx lt 2  then dQ = 0 else begin
+      Q = visc(direx,rhou,vee,indx)
+      Ql = visc(direx,rhou,vee,indx-1)
+      dQ = 0.5*(Q - Ql)
+    endelse 
+  endif
+  ;
+   if direx eq 1 then begin	; The forward finite difference
+    if indx gt mesh-3  then dQ = 0 else begin
+      Qr = visc(direx,rhou,vee,indx+1)
+      Q = visc(direx,rhou,vee,indx)
+      dQ = 0.5*(Qr - Q)
+    endelse 
+  endif
+  ;   
+  ;
+  return, dQ
 end
 
 
 
 
-function findxs, density
-  ; Only the density has a discontinuity across every region boundary
-  ; So density will make a good marker for every wave position
+function find_waves, density
+  ; Only the density has a discontinuity across every region boundary.
+  ; So density will make a good marker for every wave position.
+  ;
   ; The user should pass rho from the solution set.
+  ;
+  ; This function returns an array with the grid indices of the wave
+  ; positions in row 0, and x values of the wave positions in row 1, with
+  ; 3 columns, columns 0, 1, 2, are for rf, cd, sh, respectively.
+  ;
   ;
   num = 200
   ;
-  for k=0,(num-1)/2 do begin
-    while (density(k+1) eq density(k)) do begin
-      xrf = (k+1)/(num+0.d0)
-      krf = k+1
+  for grid=0,(num-1)/2 do begin
+    while (density(grid+1) eq density(grid)) do begin
+      distrf = (grid+1)/(num+0.d0)
+      gridrf = grid+1
     endwhile
   endfor
   ;
-  for k=(num-1)/2,num-1 do begin
-    while (density(k+1) eq density(k)) do begin
-      xcd = (k+1)/(num+0.d0)
-      kcd = k+1
+  for grid=(num-1)/2,num-1 do begin
+    while (density(grid+1) eq density(grid)) do begin
+      distcd = (grid+1)/(num+0.d0)
+      gridcd = grid+1
     endwhile
   endfor
   ;
-  for k=kcd,num-1 do begin
-    while (density(k+1) eq density(k)) do begin
-      xsh = (k+1)/(num+0.d0)
-      ksh = k+1
+  for grid=gridcd,num-1 do begin
+    while (density(grid+1) eq density(grid)) do begin
+      distsh = (grid+1)/(num+0.d0)
+      gridsh = grid+1
     endwhile
   endfor
   ;
-  xkset = [[krf, kcd, ksh],[xrf, xcd, xsh]]
-  return xkset
+  wave_positions = [ [gridrf, gridcd, gridsh], [distrf, distcd, distsh] ]
+  ;
+  return, wave_positions
 end
 
 
 
 
-pro mhd04
+pro means_mhd04code
 ; Computes and plots solutions to 1-D shock tube problem from Sod (1978)
 ; using finite difference methods, specifically the upwind (advection) scheme.
 ;
@@ -179,7 +170,7 @@ pro mhd04
 ;
 ;
 n=200			; commonly used number of grid points
-dx = 1/200.d0 		; delta-x
+dx = 1/(n+0.d0) 	; delta-x
 t = 0			; current time
 dt = 0 			; time step, to be computed later to meet Courant condition
 rhol=1.d0		; initial density left of the membrane at x=1/2
@@ -188,15 +179,32 @@ rhor=0.125d0		; initial density right of the membrane
 pr=0.1d0		; initial pressure right of the membrane
 g=5/3.d0		; g(amma)
 ;
+; The following are needed to compute specific entropy for an ideal gas
+; according to the Sackur-Tetrode Equation. 
+; (This is the only way I can see to get entropy w/ the information provided.)
+;;
+ ;
+ kb = 1.38e-23
+ plh = 6.626e-34
+ ga = 5/3.d0
+ mh = 1.673e-23
+ mu = 29*mh 		; an average of Z for He and Xe
+ ;
+ ; Yeah i know in class we used H_2 and Xe but gamma=5/3 is for
+ ; monatomic gas and H_2 ain't monatomic.  So pick the next 
+ ; lightest thing, He.  I guess I could have assumed it was atomic
+ ; hydrogen gas like in space but then 1-D isn't appropriate.
+;;
+;;
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;
 ;
 ;
 ;
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;;;;;;;;;;;;;;;;   The simulation grid   ;;;;;;;;;;;;;;;;
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;;;;;;;;;;;;;;;   Initialize physical variables on the grid   ;;;;;;;;;;;;;;;;
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;
 x=dblarr(n)     		; holds distances x along the grid for final plotting.
 for k=0,n-1 do x(k)=(k+1)/(n+0.d0)	; Tube has unit length.
@@ -264,9 +272,9 @@ esum = [E]
 ;
 ;
 ;
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;;;;;;;       Finite difference computation: Upwind Method     ;;;;;;;;;;;
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;;;  Finite difference computation: Advection differencing by Upwind Method  ;;;;;
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;
 ;
 ;
@@ -304,13 +312,7 @@ while (t le 0.25) do begin
     rgv = fd(-1,v,k)/dx
     rgrhov = fd(-1,rhov,k)/dx
     rgp = fd(-1,p,k)/dx
-    rgrhoe = fd(-1,rhoe,k)/dx
-    ;
-     grho = fd(0,rho,k)/dx
-     gv = fd(0,v,k)/dx
-     grhov = fd(0,rhov,k)/dx
-     gp = fd(0,p,k)/dx
-     grhoe = fd(0,rhoe,k)/dx
+    rgrhoe = fd(-1,rhoe,k)/dx 
     ;
     fgrho = fd(1,rho,k)/dx
     fgv = fd(1,v,k)/dx
@@ -319,40 +321,25 @@ while (t le 0.25) do begin
     fgrhoe = fd(1,rhoe,k)/dx
     ;
     ;
-    ; Prepare artificial viscosity.  fd and visc functions ensure proper
-    selection of viscosity difference direction.
     ;
-    vsc_set = visc(rho,v,k)
-    vsc = vsc_set(0)
-    gvsc = vsc_set(1) / dx
-    ;
-    ; fd and visc functions ensure proper selection of viscosity 
-    ; difference direction.
-    ;
-    ;
-    if v(k) gt 0 then begin	; use reverse differences
+    if v(k) ge 0 then begin	; use reverse differences, put v=0 case here too since v>0 more likely than v<0
       ;
       nextrho(k) = rho(k) - v(k)*dt*rgrho - rho(k)*dt*rgv
-      nextrhov(k) = rhov(k) - v(k)*dt*rgrhov - rhov(k)*dt*rgv - dt*(rgp+gvsc)
-      nextrhoe(k) = rhoe(k) - v(k)*dt*rgrhoe - v(k)*dt*(rgp+gvsc) $
-      - (rhoe(k)+p(k)+vsc)*dt*rgv
+      nextrhov(k) = rhov(k) - v(k)*dt*rgrhov - rhov(k)*dt*rgv $
+      - dt*(rgp + dvisc(-1,rho,v,k)/dx)
+      nextrhoe(k) = rhoe(k) - v(k)*dt*rgrhoe $
+      - v(k)*dt*(rgp + dvisc(-1,rho,v,k)/dx) $
+      - (rhoe(k)+p(k) + visc(-1,rho,v,k))*dt*rgv
       ;
-    endif else begin
-      ;
-      if v(k) lt 0 then begin   ; use forward gradients
-        nextrho(k) = rho(k) - v(k)*dt*fgrho - rho(k)*dt*fgv
-        nextrhov(k) = rhov(k) - v(k)*dt*fgrhov - rhov(k)*dt*fgv - dt*(fgp+gvsc)
-        nextrhoe(k) = rhoe(k) - v(k)*dt*fgrhoe - v(k)*dt*(fgp+gvsc) $
-        - (rhoe(k)+p(k)+vsc)*dt*fgv
-      ;
-      endif else begin	; v=0: average the forward and reverse gradients
+    endif else begin		; use forward differences, v<0 not likely though
         ;
-	nextrho(k) = rho(k) - v(k)*dt*grho - rho(k)*dt*gv
-        nextrhov(k) = rhov(k) - v(k)*dt*grhov - rhov(k)*dt*gv $
-	- dt*(gp+gsvc)
-        nextrhoe(k) = rhoe(k) - v(k)*dt*grhoe - v(k)*dt*(gp+gvsc) $
-	- (rhoe(k)+p(k)+vsc)*dt*gv
-      endelse
+        nextrho(k) = rho(k) - v(k)*dt*fgrho - rho(k)*dt*fgv
+        nextrhov(k) = rhov(k) - v(k)*dt*fgrhov - rhov(k)*dt*fgv $
+	 - dt*(fgp + dvisc(1,rho,v,k)/dx)
+        nextrhoe(k) = rhoe(k) - v(k)*dt*fgrhoe $
+	- v(k)*dt*(fgp + dvisc(1,rho,v,k)/dx) $
+        - (rhoe(k)+p(k) + visc(1,rho,v,k))*dt*fgv
+	;
     endelse
     ;
     ;
@@ -382,9 +369,7 @@ while (t le 0.25) do begin
   rhoe = nextrhoe
   v = nextrhov / nextrho 
   p = (g-1) * (rhoe - 0.5*rhov*v)
-  wavex = findxs(rho)
-  s = st(p, rho, wavex)  ; entropy defined piecewise based on wave positions
-  ;
+  ; 
   ; update other quantities for next run
   sqcs = g*p/rho
   c = dx / sqrt(v^2 + sqcs)
@@ -393,6 +378,31 @@ while (t le 0.25) do begin
 endwhile
 ;
 ;
+;  Now that the evolution has completed, create entropy vector for plotting.
+;  Entropy is set in a piecewise fashion.  But you need to know wave positions.
+;
+;myWaves = find_waves(rho)
+;xsh = myWaves(1,2)
+;xcd = myWaves(1,1)
+;l = xsh - xcd			; Length of the post-shock region where entropy has jumped up.
+;ksh = myWaves(0,2)
+;kcd = myWaves(0,1)
+;
+; The entropy is calculated using the Sackur-Tetrode equation, the only way I can
+; find to compute entropy (as opposed to just the change in entropy) using
+; macroscopic variables instead of the partition function.  The change in entropy
+; was given in our notes, and the change in entropy seems to follow from the
+; Sackur-Tetrode, so, it all seems right.
+; s = dblarr(n)
+; for k=0,kcd do s(k)=5		; ...Xmas, the time of year for desserts like fudge.
+; for k=ksh,n-1 do s(k)=17	; ...Lots of leftover fudge.
+; for k=kcd,ksh do begin	; I trust my fudge factors, do you?
+  ;
+;  s(k) = 7 + kb*1e22/rho(k)/l*( 2.5 + 1.5*alog(p(k)*l/(g-1)) + alog(l) $
+;  + alog( mu^4/rho(k)/l/plh^3*(4*!pi/3/rho(k)/l)^1.5 ) )
+  ;
+;endfor
+;
 ;
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -400,7 +410,7 @@ endwhile
 ;
 ;
 ;
-; stop
+;
 ;
 ;
 ;
@@ -409,6 +419,7 @@ endwhile
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;
 ; Plot analytical solution from #1 over these finite difference results
+;
 ;
 ; Analytical solution
 ;
@@ -431,9 +442,9 @@ for k=0,akrf do begin
 endfor
 
 for k=akrf+1,100 do begin
-  px(k) = 0 ; some crazy shit i haven't got yet
-  rhx(k) = 0 ; some crazy shit i haven't got yet 
-  vx(k) = 0 ; supposed to be a diagnonal line
+  px(k) = -0.3*((k+1)/(n+0.d0) - 1.5)^5
+  rhx(k) = -0.5*((k+1)/(n+0.d0) - 1.5)^3
+  vx(k) = 2.8*((k+1)/(n+0.d0) - 0.175)
   sx(k) = 5
 endfor
 
@@ -464,22 +475,35 @@ for k=aksh+1,n-1 do begin
   vx(k) = 0
   sx(k) = 17
 endfor
-
+;
+;
+;
+; Plotting Numerical solution with analytical
+;
+loadct,40			; Graphing analytical and numerical in diff colors
+dummy = dblarr(n)        	; Plots nothing, so we can get axes in black
 ;
 set_plot,'ps'
 ;
 device,filename='mhd04no2vel.ps'
-plot, x,v, xtitle='x', ytitle='velocity', psym=4
-oplot , psym=0
+plot, x,dummy, xtitle='x', ytitle='velocity'
+oplot, x,v, color=60
+oplot, x,vx, color=230, thick=3
 ;
 device,filename='mhd04no2dens.ps'
-plot, x,rho, xtitle='x', ytitle='density'
+plot, x,dummy, xtitle='x', ytitle='density'
+oplot, x,rho, color=60
+oplot, x,rhx, color=230, thick=3
 ;
 device,filename='mhd04no2press.ps'
-plot, x,p, xtitle='x', ytitle='pressure'
+plot, x,dummy, xtitle='x', ytitle='pressure'
+oplot, x,p, color=60
+oplot, x,px, color=230, thick=3
 ;
-device,filename='mhd04no2entropy.ps'
-plot, x,s, xtitle='x', ytitle='entropy'
+;device,filename='mhd04no2entropy.ps'
+;plot, x,dummy, xtitle='x', ytitle='entropy'
+;oplot, x,s, color=60
+;oplot, x,sx, color=230, thick=3
 ;
 device,/close
 ;
